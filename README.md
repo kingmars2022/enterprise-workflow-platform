@@ -234,12 +234,27 @@ Then open:
 http://localhost:5173
 ```
 
+The backend connects to PostgreSQL on `localhost:5433` by default, matching the Docker Compose port mapping. Override it with `DATABASE_URL` if your database runs elsewhere.
+
+The frontend calls the API on the same origin (`/api/...`). In development, Vite proxies `/api` to `http://localhost:8080`; set `API_PROXY_TARGET` to point it at a different backend.
+
 If npm reports a cache permission error on macOS, use a project-local cache:
 
 ```bash
 npm install --cache ../.npm-cache
 npm run dev
 ```
+
+## Frontend API Routing
+
+The frontend never hardcodes the backend address. It sends requests to same-origin `/api/...`, which is forwarded to the backend:
+
+| Environment | Forwarded by | Configure with |
+|---|---|---|
+| `npm run dev` / Docker Compose | Vite dev server proxy | `API_PROXY_TARGET` (default `http://localhost:8080`) |
+| Frontend container image | nginx reverse proxy | `BACKEND_URL` at container start (default `http://backend:8080`) |
+
+To call a backend on a different origin instead, build the frontend with `VITE_API_BASE_URL` (e.g. `docker build --build-arg VITE_API_BASE_URL=https://api.example.com ./frontend`) and add that frontend origin to the backend's `CORS_ALLOWED_ORIGIN`.
 
 ## API Endpoints
 
