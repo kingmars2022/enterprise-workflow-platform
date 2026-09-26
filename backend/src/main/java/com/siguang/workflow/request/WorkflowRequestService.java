@@ -69,14 +69,14 @@ public class WorkflowRequestService {
 
     private WorkflowRequest findEntity(Long id) {
         return repository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("request not found: " + id));
+                .orElseThrow(() -> new RequestNotFoundException(id));
     }
 
     private RequestStatus nextStatus(RequestStatus current, String action) {
         String normalized = action.trim().toUpperCase();
         if ("REJECT".equals(normalized)) {
-            if (current == RequestStatus.COMPLETED) {
-                throw new IllegalStateException("completed requests cannot be rejected");
+            if (current == RequestStatus.COMPLETED || current == RequestStatus.REJECTED) {
+                throw new IllegalStateException(current.name().toLowerCase() + " requests cannot be rejected");
             }
             return RequestStatus.REJECTED;
         }
@@ -88,7 +88,8 @@ public class WorkflowRequestService {
             case SUBMITTED -> RequestStatus.IN_REVIEW;
             case IN_REVIEW -> RequestStatus.APPROVED;
             case APPROVED -> RequestStatus.COMPLETED;
-            case REJECTED, COMPLETED -> current;
+            case REJECTED, COMPLETED -> throw new IllegalStateException(
+                    current.name().toLowerCase() + " requests cannot be advanced");
         };
     }
 
