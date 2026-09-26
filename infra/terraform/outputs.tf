@@ -17,3 +17,21 @@ output "rds_endpoint" {
 output "frontend_cloudfront_domain" {
   value = aws_cloudfront_distribution.frontend.domain_name
 }
+
+output "public_subnet_ids" {
+  description = "Subnets for ECS tasks (frontend and backend)."
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "Subnets reserved for the RDS instance."
+  value       = aws_subnet.private[*].id
+}
+
+output "frontend_security_group_id" {
+  value = aws_security_group.frontend.id
+}
+
+output "backend_security_group_id" {
+  value = aws_security_group.backend.id
+}

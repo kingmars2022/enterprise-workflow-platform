@@ -36,6 +36,18 @@ resource "aws_subnet" "public" {
   }
 }
 
+# Private subnets have no route to the internet gateway; only the database lives here.
+resource "aws_subnet" "private" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index + 10)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+
+  tags = {
+    Name = "${var.project_name}-private-${count.index}"
+  }
+}
+
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -59,19 +71,36 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-resource "aws_security_group" "app" {
-  name        = "${var.project_name}-app-sg"
-  description = "Allow HTTP traffic to ECS tasks"
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project_name}-private-rt"
+  }
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# Frontend (nginx) tasks: the only public entry point. nginx proxies /api to the backend.
+resource "aws_security_group" "frontend" {
+  name        = "${var.project_name}-frontend-sg"
+  description = "Allow public HTTP to frontend tasks"
   vpc_id      = aws_vpc.main.id
 
   ingress {
+    description = "HTTP from the internet"
     from_port   = 80
-    to_port     = 8080
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
+    description = "Image pulls, logs, and proxying to the backend"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -79,29 +108,47 @@ resource "aws_security_group" "app" {
   }
 }
 
-resource "aws_security_group" "db" {
-  name        = "${var.project_name}-db-sg"
-  description = "Allow PostgreSQL from application tasks"
+# Backend (Spring Boot) tasks: reachable only from the frontend tasks.
+resource "aws_security_group" "backend" {
+  name        = "${var.project_name}-backend-sg"
+  description = "Allow API traffic from frontend tasks only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 5432
-    to_port         = 5432
+    description     = "Spring Boot API from frontend"
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
+    security_groups = [aws_security_group.frontend.id]
   }
 
   egress {
+    description = "Image pulls, logs, and database access"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# RDS accepts PostgreSQL from the backend only and needs no egress.
+resource "aws_security_group" "db" {
+  name        = "${var.project_name}-db-sg"
+  description = "Allow PostgreSQL from backend tasks only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "PostgreSQL from backend"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.backend.id]
   }
 }
 
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnets"
-  subnet_ids = aws_subnet.public[*].id
+  subnet_ids = aws_subnet.private[*].id
 }
 
 resource "aws_db_instance" "postgres" {
@@ -115,6 +162,8 @@ resource "aws_db_instance" "postgres" {
   password               = var.db_password
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.db.id]
+  publicly_accessible    = false
+  storage_encrypted      = true
   skip_final_snapshot    = true
 }
 
