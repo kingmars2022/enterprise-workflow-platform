@@ -82,7 +82,8 @@ ALB / ECS Fargate / ECR / RDS
 | Testing | JUnit, Spring Boot Test, H2 test database |
 | Local runtime | Docker Compose |
 | CI/CD | GitHub Actions |
-| Cloud architecture | AWS ALB, ECS Fargate, ECR, RDS, SSM Parameter Store |
+| Free hosting | Render (API + static site), Neon (PostgreSQL) |
+| Cloud architecture (optional, paid) | AWS ALB, ECS Fargate, ECR, RDS, SSM Parameter Store |
 | Infrastructure as Code | Terraform |
 
 ## Main Features
@@ -253,6 +254,7 @@ The frontend never hardcodes the backend address. It sends requests to same-orig
 |---|---|---|
 | `npm run dev` / Docker Compose | Vite dev server proxy | `API_PROXY_TARGET` (default `http://localhost:8080`) |
 | Frontend container image | nginx reverse proxy | `BACKEND_URL` at container start (default `http://backend:8080`) |
+| Render static site | Render rewrite rule | `routes` in `render.yaml` |
 
 To call a backend on a different origin instead, build the frontend with `VITE_API_BASE_URL` (e.g. `docker build --build-arg VITE_API_BASE_URL=https://api.example.com ./frontend`) and add that frontend origin to the backend's `CORS_ALLOWED_ORIGIN`.
 
@@ -338,6 +340,42 @@ cd /Users/siguangzhao/Documents/GitHub/my-projects/ai/Enterprise_Workflow_Manage
 docker compose config
 ```
 
+## Free Deployment (Render + Neon)
+
+The default deployment costs $0 and needs no AWS account:
+
+| Part | Service | Free tier limits |
+|---|---|---|
+| Spring Boot API | Render free web service (Docker) | 512 MB RAM; sleeps after 15 minutes idle, first request after that takes about a minute; 750 instance hours per month |
+| React frontend | Render static site | Free |
+| PostgreSQL | Neon free plan | Small storage quota; compute scales to zero when idle and wakes on the next query |
+
+Free-tier limits change. Check the current Render and Neon pricing pages before relying on them.
+
+### 1. Create the database on Neon
+
+1. Sign up at [neon.tech](https://neon.tech) and create a project.
+2. Open **Connection Details** and turn **Connection pooling off** (use the direct connection).
+3. Note the host, database, user, and password. The JDBC URL looks like:
+
+   ```text
+   jdbc:postgresql://<host>/<database>?sslmode=require
+   ```
+
+The backend creates its tables on first start (`ddl-auto: update`).
+
+### 2. Deploy on Render
+
+1. Sign up at [render.com](https://render.com) with GitHub.
+2. Choose **New > Blueprint** and select this repository. Render reads `render.yaml` and creates:
+   - `enterprise-workflow-api`: the backend, built from `backend/Dockerfile`
+   - `enterprise-workflow-web`: the frontend static site
+3. When prompted, enter `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from Neon.
+4. Check the API service URL. If it is not `https://enterprise-workflow-api.onrender.com` (Render adds a suffix when the name is taken), update the `/api/*` rewrite destination in `render.yaml` and push.
+5. Open the `enterprise-workflow-web` URL.
+
+Both services use `autoDeployTrigger: checksPass`, so every push to `main` redeploys once GitHub Actions passes. `buildFilter` limits each service to rebuilding when its own folder changes.
+
 ## CI/CD Pipeline
 
 GitHub Actions workflow:
@@ -351,22 +389,29 @@ Pipeline behavior:
 1. On pull requests to `main`, run backend tests.
 2. On pull requests to `main`, install and build the frontend.
 3. On pull requests to `main`, build backend and frontend Docker images.
-4. On push to `main`, authenticate to AWS using GitHub OIDC.
-5. Build and push backend and frontend images to Amazon ECR, tagged with the commit SHA.
-6. Register new ECS task definition revisions that use those images.
-7. Deploy the backend, then the frontend, and wait for each ECS service to become stable.
+4. On push to `main`, Render deploys both services after these checks pass (see above).
+
+Optional AWS deployment, only when the repository variable `AWS_DEPLOY_ENABLED` is `true`:
+
+1. Authenticate to AWS using GitHub OIDC.
+2. Build and push backend and frontend images to Amazon ECR, tagged with the commit SHA.
+3. Register new ECS task definition revisions that use those images.
+4. Deploy the backend, then the frontend, and wait for each ECS service to become stable.
 
 The deploy job can also be started manually from the Actions tab (`workflow_dispatch`), which is how the first deployment after `terraform apply` is done.
 
-Required GitHub secret:
+Required for AWS deployment only:
 
 ```text
-AWS_ROLE_TO_ASSUME
+Secret:   AWS_ROLE_TO_ASSUME
+Variable: AWS_DEPLOY_ENABLED=true
 ```
 
 `AWS_ROLE_TO_ASSUME` is an IAM role that GitHub Actions assumes through OIDC. See `infra/terraform/README.md` for the permissions it needs.
 
-## AWS Infrastructure
+## AWS Infrastructure (Optional, Paid)
+
+This is an alternative to the free Render deployment and costs roughly $65-75 per month. See `infra/terraform/README.md` for the cost breakdown. Nothing here is created unless you run `terraform apply`.
 
 Terraform files are located in:
 
