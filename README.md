@@ -68,7 +68,7 @@ GitHub Actions CI/CD
         |
         v
 AWS deployment architecture
-ECR / ECS / RDS / S3 / CloudFront
+ALB / ECS Fargate / ECR / RDS
 ```
 
 ## Tech Stack
@@ -82,7 +82,7 @@ ECR / ECS / RDS / S3 / CloudFront
 | Testing | JUnit, Spring Boot Test, H2 test database |
 | Local runtime | Docker Compose |
 | CI/CD | GitHub Actions |
-| Cloud architecture | AWS ECR, ECS, RDS, S3, CloudFront |
+| Cloud architecture | AWS ALB, ECS Fargate, ECR, RDS, SSM Parameter Store |
 | Infrastructure as Code | Terraform |
 
 ## Main Features
@@ -116,8 +116,8 @@ ECR / ECS / RDS / S3 / CloudFront
 - Separate frontend and backend Dockerfiles.
 - GitHub Actions pipeline for backend tests and frontend build.
 - Docker image build job for pull requests.
-- AWS deployment workflow skeleton using GitHub OIDC and ECR.
-- Terraform starter infrastructure for ECR, ECS cluster, RDS PostgreSQL, S3, and CloudFront.
+- AWS deployment workflow using GitHub OIDC, ECR, and rolling ECS deployments.
+- Terraform infrastructure for ALB, ECS Fargate services, ECR, and private RDS PostgreSQL.
 
 ## Project Structure
 
@@ -352,9 +352,11 @@ Pipeline behavior:
 2. On pull requests to `main`, install and build the frontend.
 3. On pull requests to `main`, build backend and frontend Docker images.
 4. On push to `main`, authenticate to AWS using GitHub OIDC.
-5. Build and push backend image to Amazon ECR.
-6. Build and push frontend image to Amazon ECR.
-7. Trigger ECS service redeployment.
+5. Build and push backend and frontend images to Amazon ECR, tagged with the commit SHA.
+6. Register new ECS task definition revisions that use those images.
+7. Deploy the backend, then the frontend, and wait for each ECS service to become stable.
+
+The deploy job can also be started manually from the Actions tab (`workflow_dispatch`), which is how the first deployment after `terraform apply` is done.
 
 Required GitHub secret:
 
@@ -362,7 +364,7 @@ Required GitHub secret:
 AWS_ROLE_TO_ASSUME
 ```
 
-This project includes a deployment workflow skeleton. A real AWS production deployment still needs account-specific ECS task definitions, ECS services, load balancer configuration, IAM permissions, and secrets management.
+`AWS_ROLE_TO_ASSUME` is an IAM role that GitHub Actions assumes through OIDC. See `infra/terraform/README.md` for the permissions it needs.
 
 ## AWS Infrastructure
 
@@ -376,13 +378,12 @@ The Terraform starter creates:
 
 - Backend ECR repository
 - Frontend ECR repository
-- VPC
-- Public subnets
-- Internet gateway and route table
-- ECS cluster
-- RDS PostgreSQL instance
-- S3 bucket for frontend assets
-- CloudFront distribution
+- VPC with public and private subnets
+- Application Load Balancer (public entry point)
+- ECS Fargate cluster with backend and frontend services, connected through ECS Service Connect
+- RDS PostgreSQL instance in private subnets
+- Database password in SSM Parameter Store, injected into the backend as a secret
+- CloudWatch log groups and least-privilege security groups
 
 Run Terraform:
 
@@ -441,7 +442,7 @@ This project maps directly to common full-stack Java job requirements:
 - Docker-based local development
 - GitHub Actions CI/CD
 - AWS deployment architecture
-- Terraform infrastructure-as-code starter
+- Terraform infrastructure-as-code
 
 It is stronger than a basic CRUD project because it includes workflow state transitions, audit logs, a Kanban-style operations console, dashboard metrics, Dockerized services, CI/CD, and cloud infrastructure planning.
 
@@ -452,7 +453,7 @@ It is stronger than a basic CRUD project because it includes workflow state tran
 - Built a full-stack enterprise workflow management system with React/TypeScript frontend and Spring Boot REST APIs.
 - Implemented request lifecycle processing with workflow states, approval actions, rejection handling, audit logs, and PostgreSQL persistence.
 - Added GitHub Actions CI/CD pipeline for backend testing, frontend production builds, Docker image builds, and AWS deployment preparation.
-- Created Terraform starter infrastructure for AWS ECR, ECS, RDS PostgreSQL, S3, and CloudFront deployment architecture.
+- Provisioned AWS infrastructure with Terraform: ALB, ECS Fargate services linked by Service Connect, ECR, and private RDS PostgreSQL with tiered security groups.
 
 ## Future Improvements
 
@@ -460,5 +461,5 @@ It is stronger than a basic CRUD project because it includes workflow state tran
 - Add role-based access control for requester, reviewer, and administrator roles.
 - Add database migrations with Flyway.
 - Add React component tests.
-- Add ECS task definitions, ECS services, and load balancer resources to Terraform.
+- Add HTTPS with an ACM certificate and a custom domain.
 - Add Camunda or Flowable for external BPM workflow orchestration.

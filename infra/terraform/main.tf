@@ -85,10 +85,10 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# Frontend (nginx) tasks: the only public entry point. nginx proxies /api to the backend.
-resource "aws_security_group" "frontend" {
-  name        = "${var.project_name}-frontend-sg"
-  description = "Allow public HTTP to frontend tasks"
+# Load balancer: the only public entry point.
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Allow public HTTP to the load balancer"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -97,6 +97,29 @@ resource "aws_security_group" "frontend" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Forward to frontend tasks"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+}
+
+# Frontend (nginx) tasks: reachable only from the load balancer. nginx proxies /api to the backend.
+resource "aws_security_group" "frontend" {
+  name        = "${var.project_name}-frontend-sg"
+  description = "Allow HTTP from the load balancer to frontend tasks"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "HTTP from the load balancer"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {
@@ -165,55 +188,4 @@ resource "aws_db_instance" "postgres" {
   publicly_accessible    = false
   storage_encrypted      = true
   skip_final_snapshot    = true
-}
-
-resource "aws_ecs_cluster" "main" {
-  name = "${var.project_name}-cluster"
-}
-
-resource "aws_s3_bucket" "frontend_assets" {
-  bucket_prefix = "${var.project_name}-frontend-"
-}
-
-resource "aws_cloudfront_origin_access_control" "frontend" {
-  name                              = "${var.project_name}-oac"
-  description                       = "OAC for frontend S3 bucket"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
-
-resource "aws_cloudfront_distribution" "frontend" {
-  enabled             = true
-  default_root_object = "index.html"
-
-  origin {
-    domain_name              = aws_s3_bucket.frontend_assets.bucket_regional_domain_name
-    origin_id                = "frontend-s3"
-    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
-  }
-
-  default_cache_behavior {
-    target_origin_id       = "frontend-s3"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-
-    forwarded_values {
-      query_string = false
-      cookies {
-        forward = "none"
-      }
-    }
-  }
-
-  restrictions {
-    geo_restriction {
-      restriction_type = "none"
-    }
-  }
-
-  viewer_certificate {
-    cloudfront_default_certificate = true
-  }
 }

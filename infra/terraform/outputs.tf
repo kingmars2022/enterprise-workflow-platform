@@ -14,8 +14,17 @@ output "rds_endpoint" {
   value = aws_db_instance.postgres.address
 }
 
-output "frontend_cloudfront_domain" {
-  value = aws_cloudfront_distribution.frontend.domain_name
+output "app_url" {
+  description = "Public URL of the application (load balancer)."
+  value       = local.app_url
+}
+
+output "ecs_backend_service_name" {
+  value = aws_ecs_service.backend.name
+}
+
+output "ecs_frontend_service_name" {
+  value = aws_ecs_service.frontend.name
 }
 
 output "public_subnet_ids" {
