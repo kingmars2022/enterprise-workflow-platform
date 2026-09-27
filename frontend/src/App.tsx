@@ -86,8 +86,12 @@ export function App() {
     });
   }
 
+  function refresh() {
+    load().catch((err) => setError(err instanceof Error ? err.message : "Refresh failed"));
+  }
+
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    refresh();
   }, []);
 
   const filteredRequests = useMemo(() => {
@@ -269,7 +273,7 @@ export function App() {
             <p className="eyebrow">Java / Spring Boot / PostgreSQL / CI/CD</p>
             <h2>Enterprise Workflow Command Center</h2>
           </div>
-          <button className="refresh-button" onClick={() => load()} type="button">
+          <button className="refresh-button" onClick={refresh} type="button">
             <RefreshCw size={17} />
             Refresh
           </button>

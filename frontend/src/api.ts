@@ -4,7 +4,8 @@ import type {
   WorkflowRequest
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
+// Empty by default: calls go to same-origin /api, proxied by Vite (dev) or nginx (container).
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {

@@ -5,6 +5,7 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -13,6 +14,8 @@ env:
   ECS_CLUSTER: enterprise-workflow-cluster
   ECS_BACKEND_SERVICE: enterprise-workflow-backend
   ECS_FRONTEND_SERVICE: enterprise-workflow-frontend
+  ECS_BACKEND_TASK_FAMILY: enterprise-workflow-backend
+  ECS_FRONTEND_TASK_FAMILY: enterprise-workflow-frontend
 
 jobs:
   backend-test:
@@ -68,7 +71,12 @@ jobs:
   deploy-aws:
     runs-on: ubuntu-latest
     needs: [backend-test, frontend-test]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Paid AWS deployment is opt-in: set the repository variable AWS_DEPLOY_ENABLED=true.
+    # The default free deployment runs on Render, which deploys itself once these checks pass.
+    if: >-
+      vars.AWS_DEPLOY_ENABLED == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     permissions:
       id-token: write
       contents: read
@@ -86,26 +94,58 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push backend image
+        id: backend-image
         run: |
-          BACKEND_IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
-          docker build -t "$BACKEND_IMAGE" ./backend
-          docker push "$BACKEND_IMAGE"
-          echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> "$GITHUB_ENV"
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
+          docker build -t "$IMAGE" ./backend
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Build and push frontend image
+        id: frontend-image
         run: |
-          FRONTEND_IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
-          docker build -t "$FRONTEND_IMAGE" ./frontend
-          docker push "$FRONTEND_IMAGE"
-          echo "FRONTEND_IMAGE=$FRONTEND_IMAGE" >> "$GITHUB_ENV"
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
+          docker build -t "$IMAGE" ./frontend
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Force ECS deployment
+      # Start from the task definitions Terraform manages and swap in the new images.
+      - name: Download current task definitions
         run: |
-          aws ecs update-service \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --service "${{ env.ECS_BACKEND_SERVICE }}" \
-            --force-new-deployment
-          aws ecs update-service \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --service "${{ env.ECS_FRONTEND_SERVICE }}" \
-            --force-new-deployment
+          aws ecs describe-task-definition --task-definition "$ECS_BACKEND_TASK_FAMILY" \
+            --query taskDefinition > backend-task-definition.json
+          aws ecs describe-task-definition --task-definition "$ECS_FRONTEND_TASK_FAMILY" \
+            --query taskDefinition > frontend-task-definition.json
+
+      - name: Render backend task definition
+        id: backend-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: backend-task-definition.json
+          container-name: backend
+          image: ${{ steps.backend-image.outputs.image }}
+
+      - name: Render frontend task definition
+        id: frontend-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: frontend-task-definition.json
+          container-name: frontend
+          image: ${{ steps.frontend-image.outputs.image }}
+
+      # Backend first: the frontend proxies /api to it.
+      - name: Deploy backend
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.backend-task.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_BACKEND_SERVICE }}
+          wait-for-service-stability: true
+
+      - name: Deploy frontend
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.frontend-task.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_FRONTEND_SERVICE }}
+          wait-for-service-stability: true

@@ -68,7 +68,7 @@ GitHub Actions CI/CD
         |
         v
 AWS deployment architecture
-ECR / ECS / RDS / S3 / CloudFront
+ALB / ECS Fargate / ECR / RDS
 ```
 
 ## Tech Stack
@@ -82,7 +82,8 @@ ECR / ECS / RDS / S3 / CloudFront
 | Testing | JUnit, Spring Boot Test, H2 test database |
 | Local runtime | Docker Compose |
 | CI/CD | GitHub Actions |
-| Cloud architecture | AWS ECR, ECS, RDS, S3, CloudFront |
+| Free hosting | Render (API + static site), Neon (PostgreSQL) |
+| Cloud architecture (optional, paid) | AWS ALB, ECS Fargate, ECR, RDS, SSM Parameter Store |
 | Infrastructure as Code | Terraform |
 
 ## Main Features
@@ -116,8 +117,8 @@ ECR / ECS / RDS / S3 / CloudFront
 - Separate frontend and backend Dockerfiles.
 - GitHub Actions pipeline for backend tests and frontend build.
 - Docker image build job for pull requests.
-- AWS deployment workflow skeleton using GitHub OIDC and ECR.
-- Terraform starter infrastructure for ECR, ECS cluster, RDS PostgreSQL, S3, and CloudFront.
+- AWS deployment workflow using GitHub OIDC, ECR, and rolling ECS deployments.
+- Terraform infrastructure for ALB, ECS Fargate services, ECR, and private RDS PostgreSQL.
 
 ## Project Structure
 
@@ -234,12 +235,28 @@ Then open:
 http://localhost:5173
 ```
 
+The backend connects to PostgreSQL on `localhost:5433` by default, matching the Docker Compose port mapping. Override it with `DATABASE_URL` if your database runs elsewhere.
+
+The frontend calls the API on the same origin (`/api/...`). In development, Vite proxies `/api` to `http://localhost:8080`; set `API_PROXY_TARGET` to point it at a different backend.
+
 If npm reports a cache permission error on macOS, use a project-local cache:
 
 ```bash
 npm install --cache ../.npm-cache
 npm run dev
 ```
+
+## Frontend API Routing
+
+The frontend never hardcodes the backend address. It sends requests to same-origin `/api/...`, which is forwarded to the backend:
+
+| Environment | Forwarded by | Configure with |
+|---|---|---|
+| `npm run dev` / Docker Compose | Vite dev server proxy | `API_PROXY_TARGET` (default `http://localhost:8080`) |
+| Frontend container image | nginx reverse proxy | `BACKEND_URL` at container start (default `http://backend:8080`) |
+| Render static site | Render rewrite rule | `routes` in `render.yaml` |
+
+To call a backend on a different origin instead, build the frontend with `VITE_API_BASE_URL` (e.g. `docker build --build-arg VITE_API_BASE_URL=https://api.example.com ./frontend`) and add that frontend origin to the backend's `CORS_ALLOWED_ORIGIN`.
 
 ## API Endpoints
 
@@ -323,6 +340,42 @@ cd /Users/siguangzhao/Documents/GitHub/my-projects/ai/Enterprise_Workflow_Manage
 docker compose config
 ```
 
+## Free Deployment (Render + Neon)
+
+The default deployment costs $0 and needs no AWS account:
+
+| Part | Service | Free tier limits |
+|---|---|---|
+| Spring Boot API | Render free web service (Docker) | 512 MB RAM; sleeps after 15 minutes idle, first request after that takes about a minute; 750 instance hours per month |
+| React frontend | Render static site | Free |
+| PostgreSQL | Neon free plan | Small storage quota; compute scales to zero when idle and wakes on the next query |
+
+Free-tier limits change. Check the current Render and Neon pricing pages before relying on them.
+
+### 1. Create the database on Neon
+
+1. Sign up at [neon.tech](https://neon.tech) and create a project.
+2. Open **Connection Details** and turn **Connection pooling off** (use the direct connection).
+3. Note the host, database, user, and password. The JDBC URL looks like:
+
+   ```text
+   jdbc:postgresql://<host>/<database>?sslmode=require
+   ```
+
+The backend creates its tables on first start (`ddl-auto: update`).
+
+### 2. Deploy on Render
+
+1. Sign up at [render.com](https://render.com) with GitHub.
+2. Choose **New > Blueprint** and select this repository. Render reads `render.yaml` and creates:
+   - `enterprise-workflow-api`: the backend, built from `backend/Dockerfile`
+   - `enterprise-workflow-web`: the frontend static site
+3. When prompted, enter `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from Neon.
+4. Check the API service URL. If it is not `https://enterprise-workflow-api.onrender.com` (Render adds a suffix when the name is taken), update the `/api/*` rewrite destination in `render.yaml` and push.
+5. Open the `enterprise-workflow-web` URL.
+
+Both services use `autoDeployTrigger: checksPass`, so every push to `main` redeploys once GitHub Actions passes. `buildFilter` limits each service to rebuilding when its own folder changes.
+
 ## CI/CD Pipeline
 
 GitHub Actions workflow:
@@ -336,20 +389,29 @@ Pipeline behavior:
 1. On pull requests to `main`, run backend tests.
 2. On pull requests to `main`, install and build the frontend.
 3. On pull requests to `main`, build backend and frontend Docker images.
-4. On push to `main`, authenticate to AWS using GitHub OIDC.
-5. Build and push backend image to Amazon ECR.
-6. Build and push frontend image to Amazon ECR.
-7. Trigger ECS service redeployment.
+4. On push to `main`, Render deploys both services after these checks pass (see above).
 
-Required GitHub secret:
+Optional AWS deployment, only when the repository variable `AWS_DEPLOY_ENABLED` is `true`:
+
+1. Authenticate to AWS using GitHub OIDC.
+2. Build and push backend and frontend images to Amazon ECR, tagged with the commit SHA.
+3. Register new ECS task definition revisions that use those images.
+4. Deploy the backend, then the frontend, and wait for each ECS service to become stable.
+
+The deploy job can also be started manually from the Actions tab (`workflow_dispatch`), which is how the first deployment after `terraform apply` is done.
+
+Required for AWS deployment only:
 
 ```text
-AWS_ROLE_TO_ASSUME
+Secret:   AWS_ROLE_TO_ASSUME
+Variable: AWS_DEPLOY_ENABLED=true
 ```
 
-This project includes a deployment workflow skeleton. A real AWS production deployment still needs account-specific ECS task definitions, ECS services, load balancer configuration, IAM permissions, and secrets management.
+`AWS_ROLE_TO_ASSUME` is an IAM role that GitHub Actions assumes through OIDC. See `infra/terraform/README.md` for the permissions it needs.
 
-## AWS Infrastructure
+## AWS Infrastructure (Optional, Paid)
+
+This is an alternative to the free Render deployment and costs roughly $65-75 per month. See `infra/terraform/README.md` for the cost breakdown. Nothing here is created unless you run `terraform apply`.
 
 Terraform files are located in:
 
@@ -361,13 +423,12 @@ The Terraform starter creates:
 
 - Backend ECR repository
 - Frontend ECR repository
-- VPC
-- Public subnets
-- Internet gateway and route table
-- ECS cluster
-- RDS PostgreSQL instance
-- S3 bucket for frontend assets
-- CloudFront distribution
+- VPC with public and private subnets
+- Application Load Balancer (public entry point)
+- ECS Fargate cluster with backend and frontend services, connected through ECS Service Connect
+- RDS PostgreSQL instance in private subnets
+- Database password in SSM Parameter Store, injected into the backend as a secret
+- CloudWatch log groups and least-privilege security groups
 
 Run Terraform:
 
@@ -426,7 +487,7 @@ This project maps directly to common full-stack Java job requirements:
 - Docker-based local development
 - GitHub Actions CI/CD
 - AWS deployment architecture
-- Terraform infrastructure-as-code starter
+- Terraform infrastructure-as-code
 
 It is stronger than a basic CRUD project because it includes workflow state transitions, audit logs, a Kanban-style operations console, dashboard metrics, Dockerized services, CI/CD, and cloud infrastructure planning.
 
@@ -437,7 +498,7 @@ It is stronger than a basic CRUD project because it includes workflow state tran
 - Built a full-stack enterprise workflow management system with React/TypeScript frontend and Spring Boot REST APIs.
 - Implemented request lifecycle processing with workflow states, approval actions, rejection handling, audit logs, and PostgreSQL persistence.
 - Added GitHub Actions CI/CD pipeline for backend testing, frontend production builds, Docker image builds, and AWS deployment preparation.
-- Created Terraform starter infrastructure for AWS ECR, ECS, RDS PostgreSQL, S3, and CloudFront deployment architecture.
+- Provisioned AWS infrastructure with Terraform: ALB, ECS Fargate services linked by Service Connect, ECR, and private RDS PostgreSQL with tiered security groups.
 
 ## Future Improvements
 
@@ -445,5 +506,5 @@ It is stronger than a basic CRUD project because it includes workflow state tran
 - Add role-based access control for requester, reviewer, and administrator roles.
 - Add database migrations with Flyway.
 - Add React component tests.
-- Add ECS task definitions, ECS services, and load balancer resources to Terraform.
+- Add HTTPS with an ACM certificate and a custom domain.
 - Add Camunda or Flowable for external BPM workflow orchestration.

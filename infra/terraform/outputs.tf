@@ -14,6 +14,33 @@ output "rds_endpoint" {
   value = aws_db_instance.postgres.address
 }
 
-output "frontend_cloudfront_domain" {
-  value = aws_cloudfront_distribution.frontend.domain_name
+output "app_url" {
+  description = "Public URL of the application (load balancer)."
+  value       = local.app_url
+}
+
+output "ecs_backend_service_name" {
+  value = aws_ecs_service.backend.name
+}
+
+output "ecs_frontend_service_name" {
+  value = aws_ecs_service.frontend.name
+}
+
+output "public_subnet_ids" {
+  description = "Subnets for ECS tasks (frontend and backend)."
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "Subnets reserved for the RDS instance."
+  value       = aws_subnet.private[*].id
+}
+
+output "frontend_security_group_id" {
+  value = aws_security_group.frontend.id
+}
+
+output "backend_security_group_id" {
+  value = aws_security_group.backend.id
 }
